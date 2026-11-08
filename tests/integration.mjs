@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { db, delay, disconnect, login, rejected, staff, state, student } from './db.mjs';
 
 const a = 'UJI A';
@@ -54,6 +54,8 @@ async function run() {
   const dashboard = await staff(teacher, 'dashboard');
   assert.equal(dashboard.profile.role, 'teacher');
   assert.deepEqual(dashboard.classes.map(c => c.class_code), [a]);
+  assert.deepEqual(dashboard.slots.map(slot => [slot.start_time, slot.end_time]),
+    [['07:30:00','09:00:00'], ['09:30:00','11:00:00'], ['11:30:00','13:00:00']]);
   await rejected(() => staff(teacher, 'staff_save', {
     email: unlisted.email, display_name: 'Uji', role: 'admin', classes: [], is_active: true
   }));
@@ -76,6 +78,8 @@ async function run() {
   const { id: exam } = await staff(teacher, 'exam_save', draft);
   await rejected(() => staff(teacher, 'publish', { exam_id: exam, question_ids: [q3] }));
   await staff(teacher, 'publish', { exam_id: exam, question_ids: [q1] });
+  const { id: overlapping } = await staff(teacher, 'exam_save', { ...draft, title: 'Jadwal bertabrakan' });
+  await rejected(() => staff(teacher, 'publish', { exam_id: overlapping, question_ids: [q2] }));
   await staff(teacher, 'question_save', { ...question(subject, 1), id: q1, correct_option: 'D' });
   const { participants } = await staff(teacher, 'exam_detail', { exam_id: exam });
   assert.equal(participants.length, 2);
@@ -87,7 +91,11 @@ async function run() {
   const byStudent = new Map([tokenOne, tokenTwo].map(item => [item.nis, item.token]));
   const token = byStudent.get(first.nis);
   const otherToken = byStudent.get(second.nis);
-  assert.ok(token && otherToken);
+  assert.match(token, /^[A-Za-z0-9_-]{32}$/);
+  assert.match(otherToken, /^[A-Za-z0-9_-]{32}$/);
+  assert.notEqual(token, otherToken);
+  const { rows: [{ verifier }] } = await db("SELECT encode(token_hash, 'hex') AS verifier FROM cbt_private.rights WHERE id=$1", [first.right_id]);
+  assert.equal(verifier, createHash('sha256').update(token).digest('hex'));
   assert.deepEqual(await staff(teacher, 'tokens', { exam_id: exam, right_ids: [first.right_id], mode: 'issue' }), []);
   assert.equal(JSON.stringify(await staff(teacher, 'exam_detail', { exam_id: exam })).includes(token), false);
   console.log('PASS question review, immutable publication, scoped participants, one-time token display');

@@ -48,16 +48,20 @@ async function setup() {
   const nis = '710001';
   await db("INSERT INTO public.cbt_students(nis,full_name,class_code,grade_level) VALUES ($1,'Siswa Sintetis','UJI A',10)", [nis]);
   const { rows: [{ id: subject_id }] } = await db("INSERT INTO public.cbt_subjects(slug,name) VALUES ('uji-ui','Mapel Sintetis') RETURNING id");
-  const { id: question } = await staff(user, 'question_save', {
-    subject_id, prompt: 'Soal UI sintetis?', options: { A: 'Pilihan Alfa', B: 'Pilihan Beta', C: 'Pilihan Gamma', D: 'Pilihan Delta' },
-    correct_option: 'A', review_status: 'approved', grade_scope: '10'
-  });
+  const questionIds = [];
+  for (const prompt of ['Soal UI sintetis?', 'Soal UI sintetis lanjutan 2?', 'Soal UI sintetis lanjutan 3?']) {
+    const { id } = await staff(user, 'question_save', {
+      subject_id, prompt, options: { A: 'Pilihan Alfa', B: 'Pilihan Beta', C: 'Pilihan Gamma', D: 'Pilihan Delta' },
+      correct_option: 'A', review_status: 'approved', grade_scope: '10'
+    });
+    questionIds.push(id);
+  }
   const { id: exam_id } = await staff(user, 'exam_save', {
     subject_id, title: 'Ujian Sintetis', classes: ['UJI A'], grade_level: 10,
     opens_at: new Date(Date.now() + 3000).toISOString(), closes_at: new Date(Date.now() + 15 * 60_000).toISOString(),
-    duration_minutes: 10, question_count: 1
+    duration_minutes: 10, question_count: questionIds.length
   });
-  await staff(user, 'publish', { exam_id, question_ids: [question] });
+  await staff(user, 'publish', { exam_id, question_ids: questionIds });
   const { participants: [{ right_id }] } = await staff(user, 'exam_detail', { exam_id });
   const [{ token }] = await staff(user, 'tokens', { exam_id, right_ids: [right_id], mode: 'issue' });
   return { user, password, nis, token, right_id };
@@ -143,6 +147,14 @@ try {
   )).rows[0]?.option === option;
   await page.getByRole('radio').nth(0).check();
   await until(() => stored('A'), 'autosave never reached database');
+  const flag = page.getByRole('button', { name: 'Ragu', exact: true });
+  await flag.click();
+  assert.equal(await flag.getAttribute('aria-pressed'), 'true');
+  await page.getByRole('button', { name: 'Berikutnya', exact: true }).click();
+  await page.getByRole('heading', { name: 'Soal UI sintetis lanjutan 2?' }).waitFor();
+  check(await page.evaluate(() => document.activeElement?.id === 'question-heading'), 'question navigation did not move keyboard focus');
+  await page.getByRole('button', { name: 'Sebelumnya', exact: true }).click();
+  check(await page.getByRole('radio').nth(0).isChecked(), 'question navigation removed the selected answer');
   await page.reload({ waitUntil: 'networkidle' });
   await page.getByText('Soal UI sintetis?', { exact: true }).waitFor();
   check(await page.getByRole('radio').nth(0).isChecked(), 'confirmed answer lost after refresh');
@@ -187,8 +199,18 @@ try {
   await page.getByRole('button', { name: 'Masuk', exact: true }).click();
   await page.getByRole('heading', { name: 'Ringkasan', exact: true }).waitFor();
   await mobile(page, 'staff dashboard');
+  await page.getByRole('button', { name: 'Ujian', exact: true }).click();
+  await page.getByRole('button', { name: 'Kelola ujian', exact: true }).click();
+  await mobile(page, 'staff result detail');
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Ekspor rekap CSV', exact: true }).click();
+  const download = await downloadEvent;
+  assert.equal(download.suggestedFilename(), 'rekap-cbt.csv');
+  const chunks = [];
+  for await (const chunk of await download.createReadStream()) chunks.push(chunk);
+  assert.match(Buffer.concat(chunks).toString(), /Siswa Sintetis/);
   assert.deepEqual(pageErrors, []);
-  console.log('PASS 320 px student sign-in, focus, touch sizing, student SQL, autosave, reload, duplicate tab isolation, offline reconnect, rotation, Back, receipt, and staff dashboard with Auth adapter');
+  console.log('PASS 320 px student sign-in, focus, touch sizing, student SQL, question navigation, flagged state, autosave, reload, duplicate tab isolation, offline reconnect, rotation, Back, receipt, staff dashboard with Auth adapter, and CSV export');
 } catch (error) {
   console.error(error.message);
   console.error(error.stack?.split('\n').filter(line => line.includes('/tests/')).slice(0, 3).join('\n'));
