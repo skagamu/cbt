@@ -21,12 +21,14 @@ export function mountStudent(root, rpc) {
   let credentials = read('sessionStorage', storageKey);
   let device = credentials?.device || crypto.randomUUID();
   let session = credentials?.session;
+  let recoveryDraft = credentials?.recoveryDraft;
   let unlock;
   let state;
   let pending = {};
   let storageAvailable = true;
   let question = 1;
-  let offset = 0;
+  let serverTime = 0;
+  let sampledAt = 0;
   let busy = false;
   let saveTimer;
   let retry = 0;
@@ -50,14 +52,20 @@ export function mountStudent(root, rpc) {
     if (current?.status === 'active') write('localStorage', draftKey(current), null);
   }
   function sessionRecord() {
-    storageAvailable = write('sessionStorage', storageKey, { device, session }) && storageAvailable;
+    storageAvailable = write('sessionStorage', storageKey, { device, session, recoveryDraft }) && storageAvailable;
   }
   function clearSave() {
     clearTimeout(saveTimer);
     saveTimer = undefined;
   }
-  function reset(message) {
-    releaseDraft(state);
+  function reset(message, { preserveDraft = false } = {}) {
+    if (preserveDraft) {
+      if (state?.status === 'active') recoveryDraft = draftKey();
+    } else {
+      releaseDraft(state);
+      if (recoveryDraft) write('localStorage', recoveryDraft, null);
+      recoveryDraft = undefined;
+    }
     pending = {};
     session = undefined;
     state = undefined;
@@ -73,8 +81,11 @@ export function mountStudent(root, rpc) {
     noticeKind = kind;
     render();
   }
+  function serverNow() {
+    return serverTime + performance.now() - sampledAt;
+  }
   function secondsLeft() {
-    return state?.deadline ? Math.max(0, Math.ceil((Date.parse(state.deadline) - Date.now() - offset) / 1000)) : 0;
+    return state?.deadline ? Math.max(0, Math.ceil((Date.parse(state.deadline) - serverNow()) / 1000)) : 0;
   }
   function countdown() {
     const seconds = secondsLeft();
@@ -95,7 +106,7 @@ export function mountStudent(root, rpc) {
     if (!state?.writable) return 'Hanya lihat';
     if (busy) return 'Menyimpan…';
     if (hasPending()) return storageAvailable ? 'Draf di HP ini' : 'Belum tersimpan';
-    return state?.saved_at ? `Tersimpan • ${clock.format(new Date(state.saved_at))} WIB` : 'Siap menyimpan';
+    return state?.saved_at ? `Tersimpan di server • ${clock.format(new Date(state.saved_at))} WIB` : 'Siap menyimpan';
   }
   function updateIndicators() {
     const time = root.querySelector('[data-timer]');
@@ -116,7 +127,8 @@ export function mountStudent(root, rpc) {
 
   function accept(next, { restore = false, drop = false } = {}) {
     const previous = state;
-    offset = Date.parse(next.server_now) - Date.now();
+    serverTime = Date.parse(next.server_now);
+    sampledAt = performance.now();
     const sameLease = previous?.right_id === next.right_id && previous?.write_epoch === next.write_epoch;
     state = sameLease && next.status === 'active' ? { ...previous, ...next } : next;
     if (state.status !== 'active') {
@@ -131,10 +143,11 @@ export function mountStudent(root, rpc) {
       if (previous && (!sameLease || drop)) releaseDraft(previous);
       pending = {};
     }
+    if (secondsLeft() > 0) finalizing = false;
     if (restore) {
       const draft = read('localStorage', draftKey());
       pending = state.writable && draft?.answers ? draft.answers : {};
-      question = Math.max(1, Math.min(Number(draft?.question) || 1, state.questions.length));
+      question = Math.max(1, Math.min(Number(draft?.question) || 1, state.questions?.length ?? 1));
     }
     let conflict = false;
     for (const [position, answer] of Object.entries(pending)) {
@@ -160,7 +173,7 @@ export function mountStudent(root, rpc) {
       void operation('save');
     }, delay);
   }
-  async function operation(action, { sync = false } = {}) {
+  async function operation(action) {
     if (!session || scope.aborted) return;
     if (action === 'submit' && !navigator.onLine) {
       show('Koneksi terputus. Hubungkan kembali untuk mengirim ujian.', 'warning');
@@ -188,7 +201,7 @@ export function mountStudent(root, rpc) {
       if (scope.aborted) return;
       if (!next.ok) {
         if (next.code === 'login_required') {
-          reset('Sesi berakhir. Masuk kembali dengan token ujian yang berlaku.');
+          reset('Sesi berakhir. Masuk kembali di tab ini dengan token ujian yang berlaku.', { preserveDraft: true });
         } else if (['lease_conflict', 'stale_revision'].includes(next.code)) {
           if (state) state.writable = false;
           uncertain = false;
@@ -196,12 +209,12 @@ export function mountStudent(root, rpc) {
             ? 'Perangkat lain sedang memegang akses tulis. Muat status terbaru sebelum mengambil alih.'
             : 'Terjadi benturan simpan. Jawaban terakhir dari server akan dimuat.';
           noticeKind = 'warning';
-          followUp = { sync: next.code === 'stale_revision' };
+          followUp = true;
         } else {
           uncertain = false;
           notice = 'Ujian berubah status. Perbarui informasi lalu coba lagi.';
           noticeKind = 'warning';
-          if (action !== 'state') followUp = {};
+          if (action !== 'state') followUp = true;
         }
         rerender = true;
         return;
@@ -216,7 +229,7 @@ export function mountStudent(root, rpc) {
         notice = 'Akses tulis sudah pindah ke perangkat ini. Jawaban yang tersimpan di server dimuat.';
         noticeKind = 'success';
       }
-      accept(next, { restore: action === 'state' && !state, drop: sync || action === 'claim' });
+      accept(next, { restore: action === 'state' && !state, drop: action === 'claim' });
       if (state.status === 'final') {
         notice = '';
         finalizing = false;
@@ -240,7 +253,7 @@ export function mountStudent(root, rpc) {
         else updateIndicators();
         if (followUp) {
           queuedSubmit = false;
-          void operation('state', followUp);
+          void operation('state');
         } else if (queuedSubmit) {
           queuedSubmit = false;
           if (state?.status === 'active' && state.writable) void operation('submit');
@@ -340,7 +353,7 @@ export function mountStudent(root, rpc) {
       <p>${date(state.submitted_at)} · ${escape(why[state.submit_reason])}</p>
       <p class="student-notice">${state.score !== null && state.score !== undefined
         ? `Nilai <strong>${new Intl.NumberFormat('id-ID').format(state.score)}</strong>`
-        : state.score_released ? 'Nilai perlu ditinjau guru.' : 'Nilai tersedia setelah dirilis oleh guru.'}</p>
+        : 'Nilai akan tampil di sini setelah dirilis dan siap ditampilkan.'}</p>
       <div class="student-actions">
         <button class="button primary" data-action="state" data-needs-connection>Cek nilai</button>
         <button class="button subtle" data-sign-out>Keluar</button>
@@ -357,6 +370,19 @@ export function mountStudent(root, rpc) {
   }
   function examMarkup() {
     const item = state.questions?.[question - 1];
+    if (!state.writable) return `<section class="student-panel">
+      <p class="overline">UJIAN BERLANGSUNG</p>
+      <h1>${escape(state.title)}</h1>
+      <p class="student-name">${escape(state.student_name)} · ${escape(state.class_code)}</p>
+      <div class="student-facts"><div><span>Sisa waktu</span><strong data-timer role="timer" aria-label="Sisa waktu">${countdown()}</strong></div></div>
+      ${alertMarkup()}
+      <p class="student-notice warning">Akses tulis ada di sesi lain. Ambil alih untuk membuka soal dan melanjutkan dengan simpanan terakhir dari server.</p>
+      <div class="student-actions">
+        <button class="button primary" data-action="claim" data-needs-connection>Ambil alih di perangkat ini</button>
+        <button class="button subtle" data-action="state" data-needs-connection>Cek status</button>
+        <button class="button subtle" data-sign-out>Keluar</button>
+      </div>
+    </section>`;
     if (!item) return '<section class="student-panel"><h1>Memuat soal</h1><button class="button primary" data-action="state" data-needs-connection>Cek status</button></section>';
     const answer = ownAnswer(question);
     const total = state.questions.length;
@@ -370,7 +396,6 @@ export function mountStudent(root, rpc) {
       </div>
       ${alertMarkup()}
       ${!navigator.onLine ? '<p class="student-notice warning" role="status">Koneksi terputus. Draf tetap di HP ini jika penyimpanan tersedia. Timer tetap berjalan.</p>' : ''}
-      ${!state.writable ? '<p class="student-notice warning">Akses tulis ada di sesi lain. Ambil alih untuk melanjutkan dengan simpanan terakhir dari server.</p><button class="button primary take-over" data-action="claim" data-needs-connection>Ambil alih di perangkat ini</button>' : ''}
       ${finalizing || uncertain ? '<p class="student-notice warning" role="status">Menunggu konfirmasi dari server.</p><button class="button primary take-over" data-action="state" data-needs-connection>Cek status pengiriman</button>' : ''}
       <div class="exam-grid">
         <article class="question-card">
@@ -400,6 +425,7 @@ export function mountStudent(root, rpc) {
 
   function render() {
     if (scope.aborted) return;
+    root.querySelector('dialog[open]')?.close('back');
     root.innerHTML = !state ? (
       session ? `<section class="student-panel"><h1>Memulihkan sesi</h1>${alertMarkup()}<div class="student-actions">
         <button class="button primary" data-action="state" data-needs-connection>Coba lagi</button>
@@ -460,8 +486,10 @@ export function mountStudent(root, rpc) {
         return;
       }
       session = result.session;
-      sessionRecord();
       accept(result, { restore: true });
+      if (recoveryDraft && recoveryDraft !== draftKey()) write('localStorage', recoveryDraft, null);
+      recoveryDraft = undefined;
+      sessionRecord();
       show();
       root.querySelector('h1')?.setAttribute('tabindex', '-1');
       root.querySelector('h1')?.focus();
@@ -474,6 +502,7 @@ export function mountStudent(root, rpc) {
       busy = false;
       const button = root.querySelector('#student-login [type=submit]');
       if (button) button.disabled = false;
+      updateIndicators();
     }
   }, { signal: scope });
 
@@ -507,11 +536,18 @@ export function mountStudent(root, rpc) {
       refreshProgress();
     } else if (button.hasAttribute('data-submit-open')) {
       const counts = root.querySelector('[data-summary]').textContent;
+      const review = state.questions.filter(({ position }) => !ownAnswer(position)?.option || ownAnswer(position)?.flagged);
       const modal = dialog(`<h2 id="dialog-title">Kirim ujian?</h2><p>${escape(counts)}. Setelah dikirim, jawaban dikunci.</p>
-        <form method="dialog" class="student-actions"><button class="button subtle" value="back" autofocus>Periksa lagi</button>
-        <button class="button primary" value="submit">Ya, kirim ujian</button></form>`, button);
+        <form method="dialog">
+          ${review.length ? `<div class="number-grid" aria-label="Soal untuk diperiksa">
+            ${review.map(({ position }) => `<button class="number-button" value="question:${position}"
+              aria-label="Periksa soal ${position}">${position}</button>`).join('')}</div>` : ''}
+          <div class="student-actions"><button class="button subtle" value="back" autofocus>Periksa lagi</button>
+          <button class="button primary" value="submit">Ya, kirim ujian</button></div>
+        </form>`, button);
       modal.addEventListener('close', () => {
         if (modal.returnValue === 'submit') void operation('submit');
+        else if (modal.returnValue.startsWith('question:')) go(Number(modal.returnValue.split(':')[1]));
       }, { once: true });
     } else if (button.hasAttribute('data-image')) {
       const item = state.questions[question - 1];
@@ -525,7 +561,7 @@ export function mountStudent(root, rpc) {
     updateIndicators();
     if (!state || busy || !navigator.onLine || root.querySelector('dialog[open]')) return;
     const due = state.status === 'active' && secondsLeft() === 0;
-    const open = state.status === 'waiting' && Date.parse(state.opens_at) <= Date.now() + offset;
+    const open = state.status === 'waiting' && Date.parse(state.opens_at) <= serverNow();
     if ((due || open) && Date.now() >= autoCheckAfter) {
       autoCheckAfter = Date.now() + 5000;
       finalizing = due;
@@ -539,8 +575,10 @@ export function mountStudent(root, rpc) {
   window.addEventListener('offline', render, { signal: scope });
   window.addEventListener('pageshow', pulse, { signal: scope });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') pulse();
-    else if (hasPending() && canEdit()) {
+    if (document.visibilityState === 'visible') {
+      pulse();
+      if (session && !root.querySelector('dialog[open]')) void operation('state');
+    } else if (hasPending() && canEdit()) {
       clearSave();
       void operation('save');
     }
@@ -564,6 +602,7 @@ export function mountStudent(root, rpc) {
     if (!await lockDevice() && !scope.aborted) {
       device = crypto.randomUUID();
       session = undefined;
+      recoveryDraft = undefined;
       await lockDevice();
     }
     if (scope.aborted) return;

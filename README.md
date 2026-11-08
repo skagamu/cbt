@@ -8,7 +8,7 @@ Portal ujian pilihan ganda untuk siswa dan ruang kerja guru/admin. Aplikasi stat
 
 1. Buka [Authentication → Users](https://supabase.com/dashboard/project/ynepxhlvpvlfuhcerydu/auth/users) di proyek pilot. Buat akun individual admin sekolah melalui **Add user → Create new user**, dan konfirmasi akun sesuai prosedur sekolah. Masukkan kredensial di Dashboard.
 2. Di [SQL Editor](https://supabase.com/dashboard/project/ynepxhlvpvlfuhcerydu/sql/new), ganti alamat contoh di bawah dengan email akun Auth yang sudah dibuat. SQL ini memberi profil admin pada akun tersebut. Setelah admin pertama aktif, daftar profil berikutnya lewat menu **Akses Guru**.
-   
+
    ```sql
    insert into cbt_private.staff (user_id, display_name, role, is_active)
    select id, 'Admin CBT', 'admin', true
@@ -17,7 +17,7 @@ Portal ujian pilihan ganda untuk siswa dan ruang kerja guru/admin. Aplikasi stat
    on conflict (user_id) do nothing
    returning user_id;
    ```
-   
+
    Hasil harus satu baris saat pemasangan pertama. Masuk melalui [portal guru](https://skagamu.github.io/cbt/#guru), lalu cek dashboard dan pengelolaan akses. Untuk guru, buat akun Auth terlebih dahulu dan tetapkan kelas melalui portal admin.
 3. Pertahankan pendaftaran publik dan login anonim Auth dalam posisi mati. **Site URL** harus `https://skagamu.github.io/cbt/`. Jika reset kata sandi dipakai, uji pengiriman email di browser yang sama dengan browser peminta reset. Untuk pengiriman ke pengguna sekolah, ikuti konfigurasi SMTP Supabase. [Dokumentasi Supabase Auth](https://supabase.com/docs/guides/auth/passwords)
 4. Tinjau draf bank soal. Untuk ujian standar 40 soal, tambahkan soal hingga ada 40 soal yang sudah disetujui untuk mapel tersebut. Buat jadwal WIB, pilih kelas dan soal, lalu terbitkan. Terbitkan token individual dan bagikan melalui saluran privat. Token mentah muncul sekali. Jika salinan hilang, gunakan regenerasi untuk mencabut token dan sesi lama sambil mempertahankan jawaban server.

@@ -58,7 +58,7 @@ if (!url || !key) {
   let route;
   let cleanup;
   function showRoute() {
-    if (location.hash === '#konten') return;
+    if (route && location.hash === '#konten') return;
     const next = location.hash === '#guru' ? 'guru' : 'siswa';
     if (next === route) return;
     cleanup?.();

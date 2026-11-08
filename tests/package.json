@@ -1,0 +1,14 @@
+{
+  "name": "cbt-local-verification",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "integration": "../tests/with-local-db.sh node tests/integration.mjs",
+    "load": "../tests/with-local-db.sh node tests/load.mjs",
+    "browser": "../tests/with-local-db.sh node tests/browser.mjs"
+  },
+  "dependencies": {
+    "pg": "8.23.1",
+    "playwright": "1.65.0"
+  }
+}

@@ -1099,4 +1099,3 @@ export function mountStaff(root, api) {
     pane.remove();
   };
 }
-
